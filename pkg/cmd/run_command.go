@@ -18,14 +18,14 @@ General Options:
 
 Run Options:
 
-  -repo=<string>
-	The repo slug that should be used as the target for data collection.
-	Default is 'etcd-io/etcd'.
+	-repo=<string>
+		The repo slug that should be used as the target for data collection.
+		Default is 'etcd-io/etcd'.
 
 	-branch=<string>
-	The branch name that should be used for gathering statistics in the target
-	repo.
-	Default is 'main'.
+		The branch name that should be used for gathering statistics in the target
+		repo.
+		Default is 'main'.
 `
 )
 
@@ -46,5 +46,18 @@ func (a *RunCommand) Name() string {
 }
 
 func (a *RunCommand) Run(args []string) int {
+	flags := a.Meta.FlagSet(a.Name())
+	flags.Usage = func() { a.Meta.UI.Output(a.Help()) }
+
+	var repoSlug string
+	var branchName string
+
+	flags.StringVar(&repoSlug, "repo", "etcd-io/etcd", "")
+	flags.StringVar(&branchName, "branch", "main", "")
+
+	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+
 	return 0
 }
