@@ -41,6 +41,11 @@ fmt: ## Run gofmt over all source files
 	@echo "==> Fixing source files with gofmt..."
 	@find . -name '*.go' | grep -v vendor | xargs gofmt -s -w
 
+.PHONY: lint
+lint: ## Run golangci-lint
+	@echo "==> Checking sources with golangci-lint..."
+	@golangci-lint run --fix
+
 .PHONY: build
 build: GOOS=$(shell go env GOOS)
 build: GOARCH=$(shell go env GOARCH)
@@ -58,6 +63,8 @@ build: fmt ## Build for the current development platform
 	@cp $(PROJECT_ROOT)/$(DEV_TARGET) $(PROJECT_ROOT)/bin/
 	@cp $(PROJECT_ROOT)/$(DEV_TARGET) $(GOPATH)/bin/
 
+.PHONY: check
+check: fmt lint build test
 
 .PHONY: test
 test:
