@@ -1,0 +1,53 @@
+run:
+  # timeout for analysis, e.g. 30s, 5m, default is 1m
+  deadline: 5m
+
+  # Modules download mode. If not empty, passed as -mod=<mode> to go tools
+  module-download-mode: vendor
+
+  tests: false
+
+# output configuration options
+output:
+  # colored-line-number|line-number|json|tab|checkstyle|code-climate, default is "colored-line-number"
+  format: colored-line-number
+
+  # print lines of code with issue, default is true
+  print-issued-lines: true
+
+  # print linter name in the end of issue text, default is true
+  print-linter-name: true
+
+# all available settings of specific linters
+linters-settings:
+  errcheck:
+    # report about not checking of errors in type assetions: `a := b.(MyStruct)`;
+    # default is false: such cases aren't reported by default.
+    check-type-assertions: true
+  gofmt:
+    # simplify code: gofmt with `-s` option, true by default
+    simplify: true
+  gocritic:
+    disabled-checks:
+      - commentFormatting
+      - deprecatedComment
+
+linters:
+  disable-all: true
+  enable:
+    - goimports
+    - gocritic
+    - misspell
+    - govet
+    - deadcode
+    - varcheck
+    - errcheck
+    - ineffassign
+    - structcheck
+    - unconvert
+    - gofmt
+    - gosimple
+    - depguard
+    - staticcheck
+    - revive
+  fast: false
