@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"flag"
 
+	"github.com/google/go-github/v43/github"
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/mitchellh/cli"
+	"golang.org/x/oauth2"
 )
 
 var generalOptions = `
@@ -35,4 +39,16 @@ func (m *Meta) FlagSet(n string) *flag.FlagSet {
 	f.StringVar(&m.token, "token", "", "")
 
 	return f
+}
+
+func (m *Meta) GitHubClient() (*github.Client, error) {
+	hc := cleanhttp.DefaultClient()
+	if m.token != "" {
+		ts := oauth2.StaticTokenSource(
+			&oauth2.Token{AccessToken: m.token},
+		)
+		hc = oauth2.NewClient(context.TODO(), ts)
+	}
+	client := github.NewClient(hc)
+	return client, nil
 }
