@@ -158,8 +158,9 @@ func (a *RunCommand) Run(args []string) int {
 							entry, ok := testTable[t.Name]
 							if !ok {
 								entry = TableEntry{
-									TestName:    t.Name,
-									TestPackage: t.Classname,
+									TestName:          t.Name,
+									TestPackage:       t.Classname,
+									RecentFailureLink: res.Run.GetHTMLURL(),
 								}
 							}
 
@@ -197,10 +198,11 @@ func (a *RunCommand) Run(args []string) int {
 }
 
 type TableEntry struct {
-	TestName     string `header:"Test Name"`
-	TestPackage  string `header:"Package"`
-	FailureCount int    `header:"Failure Count"`
-	LastFailure  time.Time
+	TestName          string `header:"Test Name"`
+	TestPackage       string `header:"Package"`
+	FailureCount      int    `header:"Failure Count"`
+	RecentFailureLink string `header:"Recent Failure"`
+	LastFailure       time.Time
 }
 
 type ProcessedRunArtifact struct {
