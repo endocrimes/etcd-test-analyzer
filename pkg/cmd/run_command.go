@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/endocrimes/etcd-test-analyzer/pkg/fetcher"
+	"github.com/endocrimes/etcd-test-analyzer/pkg/unzipper"
 	"github.com/fatih/color"
 	"github.com/google/go-github/v43/github"
+	"github.com/joshdk/go-junit"
 	"github.com/mitchellh/cli"
 )
 
@@ -42,6 +44,9 @@ Run Options:
 	-max-age=<duration>
 		Max age of workflow runs that should be fetched for analysis.
 		Default is '168h'
+
+	-workflow=<string>
+		Name of the workflow to inspect.
 `
 )
 
@@ -61,24 +66,27 @@ func (a *RunCommand) Name() string {
 	return "run"
 }
 
-type workflowPathInfo struct {
-	Run  *github.WorkflowRun
-	Path string
-}
-
 func (a *RunCommand) Run(args []string) int {
 	flags := a.Meta.FlagSet(a.Name())
 	flags.Usage = func() { a.Meta.UI.Output(a.Help()) }
 
 	var repoSlug string
 	var branchName string
+	var workflowName string
 	var maxAge time.Duration
 
 	flags.StringVar(&repoSlug, "repo", "etcd-io/etcd", "")
 	flags.StringVar(&branchName, "branch", "main", "")
+	flags.StringVar(&workflowName, "workflow", "", "")
 	flags.DurationVar(&maxAge, "max-age", 7*24*time.Hour, "")
 
 	if err := flags.Parse(args); err != nil {
+		return 1
+	}
+
+	segments := strings.Split(repoSlug, "/")
+	if len(segments) != 2 {
+		a.Meta.UI.Error(fmt.Sprintf("invalid repo slug: expected form org/repo, but %d segments were found", len(segments)))
 		return 1
 	}
 
@@ -90,67 +98,146 @@ func (a *RunCommand) Run(args []string) int {
 
 	a.Meta.UI.Info(color.GreenString("Fetching workflow runs from GitHub"))
 
-	f, err := fetcher.New(gh, prefixedUI("    => ", a.Meta.UI), repoSlug, branchName, maxAge)
+	fc := fetcher.NewClient(gh, segments[0], segments[1])
+
+	workflows, err := fc.ListWorkflows(context.Background())
 	if err != nil {
-		a.Meta.UI.Error(fmt.Sprintf("failed to setup fetcher, err: %v", err))
+		a.Meta.UI.Error(fmt.Sprintf("failed to find workflows: %v", err))
 		return 1
 	}
 
-	runsByWkfl, err := f.FindWorkflowRuns(context.Background())
-	if err != nil {
-		a.Meta.UI.Error(fmt.Sprintf("failed to fetch, err: %v", err))
-		return 1
-	}
+	for _, workflow := range workflows {
+		if workflowName != "" && !strings.Contains(workflow.Name, workflowName) {
+			continue
+		}
 
-	a.Meta.UI.Info("Downloading artifacts")
-	_, err = downloadArtifacts(f, runsByWkfl)
-	if err != nil {
-		a.Meta.UI.Error(fmt.Sprintf("failed to fetch artifacts, err: %v", err))
-		return 1
-	}
+		a.Meta.UI.Info(fmt.Sprintf("Analyzing workflow %q", workflow.Name))
 
-	a.Meta.UI.Info("Unzipping artifacts")
+		ui := prefixedUI(fmt.Sprintf("    [%s]: ", workflow.Name), a.Meta.UI)
+		f, err := fetcher.New(gh, ui, segments[0], segments[1], branchName, maxAge)
+		if err != nil {
+			a.Meta.UI.Error(fmt.Sprintf("failed to setup fetcher, err: %v", err))
+			return 1
+		}
+
+		ui.Info("Finding workflow runs")
+
+		runs, err := f.FindWorkflowRuns(context.Background(), workflow)
+		if err != nil {
+			a.Meta.UI.Error(fmt.Sprintf("failed to list runs for %s, err: %v", workflow.Name, err))
+			return 1
+		}
+
+		ui.Info("Downloading artifacts")
+		results, err := downloadArtifacts(f, ui, workflow, runs)
+		if err != nil {
+			a.Meta.UI.Error(fmt.Sprintf("failed to process results for %s, err: %v", workflow.Name, err))
+			return 1
+		}
+
+		totalRuns := len(results)
+		totalFails := 0
+		totalPasses := 0
+
+		testErrorCounts := make(map[string]int)
+
+		for _, res := range results {
+			if res.Failed() {
+				totalFails++
+			} else {
+				totalPasses++
+			}
+
+			for _, suite := range res.TestResults {
+				if suite.Totals.Failed > 0 || suite.Totals.Error > 0 {
+					for _, t := range suite.Tests {
+						if t.Status == junit.StatusFailed || t.Status == junit.StatusError {
+							testErrorCounts[t.Name]++
+						}
+					}
+				}
+			}
+		}
+
+		a.Meta.UI.Info(fmt.Sprintf("Runs: %d, Pass: %d, Fail: %d, Pcnt: %f\n%#v", totalRuns, totalPasses, totalFails, float64(totalPasses)/float64(totalRuns), testErrorCounts))
+	}
 
 	return 0
 }
 
-func downloadArtifacts(f fetcher.Fetcher, runsByWorkflow map[*github.Workflow][]*github.WorkflowRun) (map[*github.Workflow][]*workflowPathInfo, error) {
+type ProcessedRunArtifact struct {
+	Run              *github.WorkflowRun
+	TestResults      []junit.Suite
+	AggregatedTotals junit.Totals
+}
+
+func (p *ProcessedRunArtifact) Failed() bool {
+	return p.AggregatedTotals.Failed > 0 || p.AggregatedTotals.Error > 0
+}
+
+func downloadArtifacts(f fetcher.Fetcher, ui cli.Ui, workflow *fetcher.Workflow, runs []*github.WorkflowRun) ([]*ProcessedRunArtifact, error) {
 	rootDir, err := os.MkdirTemp("", "test-results-")
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[*github.Workflow][]*workflowPathInfo)
-	for wkfl, runs := range runsByWorkflow {
-		wkflDir := path.Join(rootDir, fmt.Sprintf("%d", wkfl.GetID()))
-		err := os.Mkdir(wkflDir, 0770)
+	ui.Info(fmt.Sprintf("Downloading artifacts for %s to %q", workflow.Name, rootDir))
+
+	result := []*ProcessedRunArtifact{}
+	for _, run := range runs {
+		runDir := path.Join(rootDir, fmt.Sprintf("%d", run.GetID()))
+
+		err := os.MkdirAll(runDir, os.ModePerm)
 		if err != nil {
 			return nil, err
 		}
 
-		runsInfo := []*workflowPathInfo{}
-		for idx := range runs {
-			run := runs[idx]
-			runDir := path.Join(wkflDir, fmt.Sprintf("%d", run.GetID()))
-			err := os.Mkdir(runDir, 0770)
-			if err != nil {
-				return nil, err
-			}
-
-			found, err := f.DownloadArtifactsForWorkflowRun(context.Background(), run.GetID(), runDir)
-			if err != nil {
-				return nil, err
-			}
-
-			if !found {
-				// No Artifacts for run
-				continue
-			}
-
-			runsInfo = append(runsInfo, &workflowPathInfo{Run: run, Path: path.Join(runDir, "artifact.zip")})
+		zipPath, err := f.DownloadArtifactsForWorkflowRun(context.Background(), run.GetID(), runDir)
+		if err != nil {
+			return nil, err
 		}
 
-		result[wkfl] = runsInfo
+		if zipPath == "" {
+			ui.Warn("no artifacts found")
+			continue
+		}
+
+		targetDir := path.Join(runDir, "artifacts")
+		err = unzipper.Unzip(zipPath, targetDir)
+		if err != nil {
+			return nil, err
+		}
+
+		suites, err := junit.IngestDir(targetDir)
+		if err != nil {
+			return nil, err
+		}
+
+		totals := junit.Totals{}
+
+		aggregate := func(l, r junit.Totals) junit.Totals {
+			nl := l
+			nl.Duration += r.Duration
+			nl.Error += r.Error
+			nl.Failed += r.Failed
+			nl.Passed += r.Passed
+			nl.Skipped += r.Skipped
+			nl.Tests += r.Tests
+			return nl
+		}
+
+		for _, suite := range suites {
+			suite.Aggregate()
+			totals = aggregate(totals, suite.Totals)
+		}
+
+		res := &ProcessedRunArtifact{
+			Run:              run,
+			AggregatedTotals: totals,
+			TestResults:      suites,
+		}
+
+		result = append(result, res)
 	}
 
 	return result, nil

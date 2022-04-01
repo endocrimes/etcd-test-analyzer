@@ -17,7 +17,8 @@ GOOSARCHES += linux/386 \
 	linux/arm64 \
 	windows/amd64 \
 	windows/arm64 \
-	darwin/amd64
+	darwin/amd64 \
+	darwin/arm64
 
 default: help
 
