@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/fatih/color"
 	"github.com/google/go-github/v43/github"
 	"github.com/joshdk/go-junit"
+	"github.com/kataras/tablewriter"
+	"github.com/lensesio/tableprinter"
 	"github.com/mitchellh/cli"
 )
 
@@ -139,7 +142,7 @@ func (a *RunCommand) Run(args []string) int {
 		totalFails := 0
 		totalPasses := 0
 
-		testErrorCounts := make(map[string]int)
+		testTable := make(map[string]TableEntry)
 
 		for _, res := range results {
 			if res.Failed() {
@@ -152,17 +155,52 @@ func (a *RunCommand) Run(args []string) int {
 				if suite.Totals.Failed > 0 || suite.Totals.Error > 0 {
 					for _, t := range suite.Tests {
 						if t.Status == junit.StatusFailed || t.Status == junit.StatusError {
-							testErrorCounts[t.Name]++
+							entry, ok := testTable[t.Name]
+							if !ok {
+								entry = TableEntry{
+									TestName:    t.Name,
+									TestPackage: t.Classname,
+								}
+							}
+
+							entry.FailureCount++
+							testTable[t.Name] = entry
 						}
 					}
 				}
 			}
 		}
 
-		a.Meta.UI.Info(fmt.Sprintf("Runs: %d, Pass: %d, Fail: %d, Pcnt: %f\n%#v", totalRuns, totalPasses, totalFails, float64(totalPasses)/float64(totalRuns), testErrorCounts))
+		a.Meta.UI.Info(fmt.Sprintf("Runs: %d, Pass: %d, Fail: %d, Pcnt: %f", totalRuns, totalPasses, totalFails, float64(totalPasses)/float64(totalRuns)))
+
+		printer := tableprinter.New(os.Stdout)
+
+		entries := []TableEntry{}
+		for _, entry := range testTable {
+			entries = append(entries, entry)
+		}
+
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[j].FailureCount <= entries[i].FailureCount
+		})
+
+		printer.BorderTop, printer.BorderBottom, printer.BorderLeft, printer.BorderRight = true, true, true, true
+		printer.CenterSeparator = "│"
+		printer.ColumnSeparator = "│"
+		printer.RowSeparator = "─"
+		printer.HeaderBgColor = tablewriter.BgBlackColor
+		printer.HeaderFgColor = tablewriter.FgGreenColor
+		printer.Print(entries)
 	}
 
 	return 0
+}
+
+type TableEntry struct {
+	TestName     string `header:"Test Name"`
+	TestPackage  string `header:"Package"`
+	FailureCount int    `header:"Failure Count"`
+	LastFailure  time.Time
 }
 
 type ProcessedRunArtifact struct {
